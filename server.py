@@ -2,9 +2,13 @@ from elasticsearch import Elasticsearch
 from flask import Flask, request
 from image_match.elasticsearch_driver import SignatureES
 from image_match.goldberg import ImageSignature
+from PIL import Image
 import json
 import os
 import sys
+import io
+import urllib.request
+import logging
 
 # =============================================================================
 # Globals
@@ -13,6 +17,7 @@ es_url = os.environ['ELASTICSEARCH_URL']
 es_index = os.environ['ELASTICSEARCH_INDEX']
 es_doc_type = os.environ['ELASTICSEARCH_DOC_TYPE']
 all_orientations = os.environ['ALL_ORIENTATIONS']
+image_dimentions_limit = os.getenv('IMAGE_DIMENTIONS_LIMIT')    
 
 app = Flask(__name__)
 es = Elasticsearch([es_url], verify_certs=True, timeout=60, max_retries=10, retry_on_timeout=True)
@@ -22,6 +27,11 @@ gis = ImageSignature()
 # Try to create the index and ignore IndexAlreadyExistsException
 # if the index already exists
 es.indices.create(index=es_index, ignore=400)
+
+if __name__ != '__main__':
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
 
 # =============================================================================
 # Helpers
@@ -50,8 +60,34 @@ def dist_to_percent(dist):
     return (1 - dist) * 100
 
 def get_image(url_field, file_field):
+    global image_dimentions_limit
     if url_field in request.form:
-        return request.form[url_field], False
+        response = urllib.request.urlopen(request.form[url_field])
+        
+        img = Image.open(io.BytesIO(response.read()))
+
+        image_width = img.size[0]
+        image_height = img.size[1]
+        image_extension = img.format
+
+        app.logger.info('Received image with dimentions: %sx%s with format %s', image_width, image_height, image_extension)
+
+        if image_dimentions_limit is not None:
+            image_dimentions_limit = int(image_dimentions_limit)
+            app.logger.info('Image dimentions limit %spx', image_dimentions_limit)
+            if image_width > image_dimentions_limit or image_height > image_dimentions_limit:
+                if image_width > image_height:
+                    wpercent = (image_dimentions_limit / float(image_width))
+                    hsize = int((float(image_height) * float(wpercent)))
+                    img = img.resize((image_dimentions_limit, hsize), Image.ANTIALIAS)
+                else:
+                    hpercent = (image_dimentions_limit / float(image_height))
+                    wsize = int((float(image_width) * float(hpercent)))
+                    img = img.resize((wsize, image_dimentions_limit), Image.ANTIALIAS)
+            app.logger.info('Image resized: %sx%s', img.size[0], img.size[1])                
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format=image_extension)
+        return img_byte_arr.getvalue(), True
     else:
         return request.files[file_field].read(), True
 
