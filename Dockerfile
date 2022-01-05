@@ -1,8 +1,9 @@
-FROM python:3.6
+FROM --platform=linux/amd64 python:3.6
 MAINTAINER Alex Kern <alex@distributedsystems.com>
 
 RUN apt-get update && \
     apt-get install -y libopenblas-dev gfortran && \
+    pip install certifi && \
     pip install numpy==1.12.1 && \
     pip install scipy==0.19.0 && \
     pip install gunicorn==19.7.1 && \
